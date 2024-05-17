@@ -1,0 +1,156 @@
+---
+title: "Final Project Part 2"
+author: "Sofia Gray"
+date: "2023-06-06"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(CVXR)
+```
+
+```{r}
+index_returns <- read.csv("index_returns.csv")
+total_returns <- read.csv("total_returns.csv")
+annual_returns <- read.csv("peer_annualized_performance.csv")
+```
+
+MBIF Market Forecasts
+```{r}
+AssetNames <- c("GlobEq", "USLC", "USSC", "DevIntl", "EMEq", "RealEst", "CorpBond", "AggBond", "Cash")
+
+returns <- c(0.095, 0.105, 0.09, 0.075, 0.08, 0.095, 0.055, 0.05, 0.04)
+stdevs <- c(0.185, 0.19, 0.24, 0.18, 0.19, 0.205, 0.095, 0.055, 0.015)
+
+NumAssets <- length(returns)
+
+corr_matrix <- matrix(c(1.00, 0.96, 0.89, 0.92, 0.74, 0.82, 0.63, 0.37, 0.02,
+                        0.96, 1.00, 0.89, 0.87, 0.70, 0.82, 0.61, 0.36, 0.00,
+                        0.89, 0.89, 1.00, 0.82, 0.71, 0.77, 0.52, 0.24, -0.08,
+                        0.92, 0.87, 0.82, 1.00, 0.81, 0.77, 0.65, 0.40, 0.06,
+                        0.74, 0.70, 0.71, 0.81, 1.00, 0.62, 0.61, 0.39, 0.08,
+                        0.82, 0.82, 0.77, 0.77, 0.62, 1.00, 0.64, 0.44, 0.04,
+                        0.63, 0.61, 0.52, 0.65, 0.61, 0.64, 1.00, 0.88, 0.52,
+                        0.37, 0.36, 0.24, 0.40, 0.39, 0.44, 0.88, 1.00, 0.77,
+                        0.02, 0.00, -0.08, 0.06, 0.08, 0.04, 0.52, 0.77, 1.00),
+                        nrow=NumAssets, ncol=NumAssets)
+
+cov_matrix <- diag(stdevs) %*% corr_matrix %*% diag(stdevs)
+```
+
+
+Target Excess Return
+```{r}
+sorted <- apply(annual_returns[1], 2, sort)
+(target <- as.numeric(quantile(sorted, probs=0.6)))
+```
+
+Information Ratio
+```{r}
+excess_returns <- 12 * (apply(total_returns - index_returns[2:9], 2, mean))
+tracking_error <- sqrt(12) * apply(total_returns - index_returns[2:9], 2, sd)
+IR <- round(excess_returns / tracking_error, 2)
+as.data.frame(IR)
+```
+
+Benchmark
+```{r}
+bench_weights <- c(0.55, 0, 0, 0, 0, 0, 0, 0.45, 0)
+
+bench_return <- as.numeric(bench_weights %*% returns)
+bench_stdev <- as.numeric(sqrt(t(bench_weights) %*% cov_matrix %*% bench_weights))
+bench_cov <- bench_weights %*% cov_matrix
+bench_cor <- bench_cov / (bench_stdev * stdevs)
+```
+
+Forecasts
+```{r}
+f <- matrix(c(returns, stdevs, corr_matrix), ncol=9, byrow=TRUE)
+b <- matrix(c(round(bench_return, 3), round(bench_stdev, 3), round(bench_cor, 3)), ncol=1, byrow=TRUE)
+
+forecasts <- matrix(c(f, b), ncol=10, byrow=FALSE)
+
+colnames(forecasts) <- c(AssetNames, "Benchmark")
+rownames(forecasts) <- c("Return", "StDev", AssetNames)
+(forecasts <- as.data.frame(forecasts))
+```
+
+Model Optimization
+```{r}
+W <- Variable(NumAssets)
+A <- Variable(NumAssets)
+
+constraint_full_investment <- sum(W) == 1.0
+constraint_expected_return <- (t(W - bench_weights) %*% returns) + (t(A) %*% c(0, excess_returns)) >= target  
+constraint_min_allocation <- W[2:9] >= 0.05
+constraint_global_eq <- W[1] == 0
+constraint_equity_allocations_lower <- sum(W[2:6]) >= 0.5
+constraint_equity_allocations_upper <- sum(W[2:6]) <= 0.6
+constraint_aggresiveness_lower <- A >= W * 0.5
+constraint_aggresiveness_upper <- A <= W * 2
+
+
+constraints <- list(constraint_full_investment,
+                    constraint_expected_return,
+                    constraint_min_allocation,
+                    constraint_global_eq,
+                    constraint_equity_allocations_lower,
+                    constraint_equity_allocations_upper,
+                    constraint_aggresiveness_lower,
+                    constraint_aggresiveness_upper)
+
+obj <- quad_form((W - bench_weights), cov_matrix) + quad_form(A, diag(c(0, tracking_error^2)))
+
+optimization <- Problem(Minimize(obj), constraints)
+
+result <- solve(optimization)
+(total_var <- result$value)
+weights <- result$getValue(W)
+weights_aggressiveness <- result$getValue(A)
+```
+
+Allocation and Aggresiveness
+```{r}
+aggressiveness <- weights_aggressiveness[2:9] / weights[2:9]
+
+weights_aggressiveness_table <- matrix(c(0, round(weights[2:9], 4),
+                                         0, round(aggressiveness, 2)), ncol=2)
+
+colnames(weights_aggressiveness_table) <- c("Allocation", "Aggressiveness")
+rownames(weights_aggressiveness_table) <- c(AssetNames)
+as.data.frame(weights_aggressiveness_table)
+```
+
+Variance
+```{r}
+var_allocation <- t(weights - bench_weights) %*% cov_matrix %*% (weights - bench_weights)
+var_aggressiveness <- t(weights_aggressiveness) %*% diag(c(0, tracking_error^2)) %*% weights_aggressiveness
+
+var_allocation_percentage <- (var_allocation / total_var) * 100
+var_aggressiveness_percentage <- (var_aggressiveness / total_var) * 100
+
+var_table <- matrix(c(round(var_allocation, 6),
+                      round(var_aggressiveness, 6), 
+                      round(var_allocation_percentage, 2),
+                      round(var_aggressiveness_percentage, 2)),
+                      ncol=2)
+
+colnames(var_table) <- c("Variance", "Percentage of Variance")
+rownames(var_table) <- c("Allocation", "Aggressiveness")
+as.data.frame(var_table)
+```
+
+Equity Exposure
+```{r}
+equity_exposure <- matrix(c((round(sum(weights[1:6]) * 100, 2))), ncol=1)
+colnames(equity_exposure) <- c("Equity Exposure")
+as.data.frame(equity_exposure)
+```
+
+
+
+
+

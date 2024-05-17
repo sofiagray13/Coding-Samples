@@ -1,0 +1,110 @@
+---
+title: "503final_project"
+author: "Sofia Gray"
+date: "2023-05-31"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+index_ret <- read.csv("index_returns.csv")
+total_ret <- read.csv("total_returns.csv")
+annual_ret <- read.csv("peer_annualized_performance.csv")
+```
+
+Part 1.
+
+Murray Investments Market Forecasts
+```{r}
+AssetNames <- c("GlobEq", "USLC", "USSC", "DevIntl", "EMEq", "RealEst", "CorpBond", "AggBond", "Cash")
+
+ret_vec <- c(0.095, 0.105, 0.09, 0.075, 0.08, 0.095, 0.055, 0.05, 0.04)
+stdev_vec <- c(0.185, 0.19, 0.24, 0.18, 0.19, 0.205, 0.095, 0.055, 0.015)
+
+NumAssets <- length(ret_vec)
+
+corr_matrix <- matrix(c(1.00, 0.96, 0.89, 0.92, 0.74, 0.82, 0.63, 0.37, 0.02,
+                        0.96, 1.00, 0.89, 0.87, 0.70, 0.82, 0.61, 0.36, 0.00,
+                        0.89, 0.89, 1.00, 0.82, 0.71, 0.77, 0.52, 0.24, -0.08,
+                        0.92, 0.87, 0.82, 1.00, 0.81, 0.77, 0.65, 0.40, 0.06,
+                        0.74, 0.70, 0.71, 0.81, 1.00, 0.62, 0.61, 0.39, 0.08,
+                        0.82, 0.82, 0.77, 0.77, 0.62, 1.00, 0.64, 0.44, 0.04,
+                        0.63, 0.61, 0.52, 0.65, 0.61, 0.64, 1.00, 0.88, 0.52,
+                        0.37, 0.36, 0.24, 0.40, 0.39, 0.44, 0.88, 1.00, 0.77,
+                        0.02, 0.00, -0.08, 0.06, 0.08, 0.04, 0.52, 0.77, 1.00),
+                        nrow=NumAssets, ncol=NumAssets)
+
+cov_matrix <- diag(stdev_vec) %*% corr_matrix %*% diag(stdev_vec)
+```
+
+```{r}
+forecast <- matrix(c(ret_vec, stdev_vec, corr_matrix), ncol=9, byrow=TRUE)
+colnames(forecast) <- c(AssetNames)
+rownames(forecast) <- c("Return", "StDev", AssetNames)
+as.data.frame(forecast)
+```
+
+Excess return target implied by peer performance over the 5-year history
+```{r}
+sorted <- apply(annual_ret[1], 2, sort)
+(target <- as.numeric(quantile(sorted, probs=0.6)))
+```
+
+Information Ratio
+```{r}
+ret <- total_ret - index_ret[2:9]
+means <- apply(ret, 2, mean)
+stdevs <- apply(ret, 2, sd)
+info_ratio <- means / stdevs
+as.data.frame(info_ratio)
+```
+
+Benchmark
+```{r}
+bench_weight_vec <- c(0.55, 0, 0, 0, 0, 0, 0, 0.45, 0)
+
+bench_ret <- as.numeric(weight_vec %*% ret_vec)
+bench_sd <- as.numeric(sqrt(t(weight_vec) %*% cov_matrix %*% weight_vec))
+bench_cov <- weight_vec %*% cov_matrix
+bench_cor <- bench_cov / (bench_sd * stdev_vec)
+```
+
+```{r}
+benchmark <- matrix(c(round(bench_ret, 3), round(bench_sd, 3), round(bench_cor, 3)), ncol=1, byrow=TRUE)
+colnames(benchmark) <- c("Benchmark")
+rownames(benchmark) <- c("Return", "StDev", AssetNames)
+as.data.frame(benchmark)
+```
+
+Forecast + Benchmark
+```{r}
+fb <- matrix(c(forecast, benchmark), ncol=10, byrow=FALSE)
+colnames(fb) <- c(AssetNames, "Benchmark")
+rownames(fb) <- c("Return", "StDev", AssetNames)
+(fb <- as.data.frame(fb))
+```
+
+Looking at the information ratios of each asset, we expect to ramp up the aggressiveness of our security selection on the ones with higher ratios and rein in on those with low information ratios. The top three asset classes with the highest information ratios that are close in value are EM Equity, corporate bonds, and aggregate bonds. The asset classes with the lowest information ratios are DevIntl and cash. On the other hand, DevIntl has a high correlation with the benchmark, so it is unclear how aggressive we should be with security selection. Alternatively, cash has a very low correlation with the benchmark, which is consistent with its low information ratio, therefore security selection for cash will be less aggressive. Overall, we expect to be more aggressive with EM Equity, corporate bonds, and aggregate bonds and less aggressive with cash. Global Equity and USLC also have a high correlation with the benchmark, so we might be more aggressive with our security selection with these as well. 
+
+The objective of this project is to maximize the expected excess return of the MIBF portfolio while minimizing the tracking error relative to the benchmark of Fund Evaluator. Just like the first project, this is a maximization/optimization problem where we add constraints to minimize tracking error and maximize excess returns of each asset class. Additionally, we want to build a strategy to optimize our portfolio so that we are able to outperform 60% of the collection of peer funds. This is our target return of 0.004798684.
+
+There are several decisions that need to be made in order to implement the maximization. We first need to find the individual weights of each asset class. This is the allocation decision, which involves determining what percentage of the portfolio we're allocating to each asset while considering the target allocation of 0.0072. We also need to decide security selection aggressiveness. Ideally, the portfolio should be a 50/50 or 60/40 mix of equities and bonds. The allocation and security selection of each asset will depend on the risk associated with it and how much of the expected return it contributes to the portfolio while keeping to our goal of outperforming at least 60% of our 31 competitors.
+
+There are several restrictions on allocation choices. The first one is that no asset can have a negative weight and the weights must add up to one. Additionally, the portfolio should aim to replicate the benchmark allocation to a certain extent. As stated in the project description, the Fund Evaluator's benchmark for the MA50to60 category assumes a 55% Global Equity  and a 45% US Aggregate Bond allocation. Lastly, our restriction on security selection aggressiveness is that it can be increased without affecting the Information Ratio for each asset class, but by no more than double the current Information Ratios. We are also allowed to cut back the aggressiveness of the security selection process by up to half, if that is best for the performance of the portfolio. 
+
+
+
+
+
+
+
+
+
+
+
+
